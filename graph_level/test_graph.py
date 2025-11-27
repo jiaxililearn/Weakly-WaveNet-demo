@@ -120,6 +120,9 @@ def compute_metrics(preds, labels, task='regression'):
               help='Adjacency matrix transformation type')
 @click.option('--pooling', default='mean', type=click.Choice(['mean', 'max', 'attention']),
               help='Pooling method')
+@click.option('--attention-type', default='simple',
+              type=click.Choice(['simple', 'temporal_mha', 'gru', 'set_transformer']),
+              help='Attention mechanism type (only used when --pooling=attention)')
 @click.option('--nhid', default=32, type=int,
               help='Number of hidden units')
 @click.option('--dropout', default=0.3, type=float,
@@ -138,9 +141,23 @@ def compute_metrics(preds, labels, task='regression'):
 @click.option('--save-predictions', default=None, type=str,
               help='Path to save predictions')
 def main(checkpoint, data, adjdata, num_nodes, seq_length, in_dim, task, num_classes,
-         gcn_bool, addaptadj, aptonly, adjtype, pooling, nhid, dropout, blocks, layers,
+         gcn_bool, addaptadj, aptonly, adjtype, pooling, attention_type, nhid, dropout, blocks, layers,
          batch_size, device, split, save_predictions):
     """Test Graph WaveNet model"""
+
+    # Try to load config from checkpoint directory
+    config_path = checkpoint.replace('_best.pth', '_config.json')
+    if os.path.exists(config_path):
+        click.echo(f"Loading config from: {config_path}")
+        with open(config_path, 'r') as f:
+            config = json.load(f)
+
+        # Override CLI args with config values if not explicitly provided
+        # This ensures consistency with training
+        attention_type = config.get('attention_type', attention_type)
+        pooling = config.get('pooling', pooling)
+        click.echo(f"Loaded attention_type from config: {attention_type}")
+        click.echo(f"Loaded pooling from config: {pooling}")
 
     # Validation
     if task == 'classification' and num_classes is None:
@@ -189,6 +206,7 @@ def main(checkpoint, data, adjdata, num_nodes, seq_length, in_dim, task, num_cla
 
     # Initialize model
     click.echo("\nInitializing model...")
+    click.echo(f"Pooling: {pooling}" + (f" (attention type: {attention_type})" if pooling == 'attention' else ""))
     model = gwnet_graph_level(
         device=device_obj,
         num_nodes=num_nodes,
@@ -206,6 +224,7 @@ def main(checkpoint, data, adjdata, num_nodes, seq_length, in_dim, task, num_cla
         blocks=blocks,
         layers=layers,
         pooling=pooling,
+        attention_type=attention_type,
         task=task
     ).to(device_obj)
 

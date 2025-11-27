@@ -200,6 +200,9 @@ def evaluate(model, dataloader, criterion, device, task='regression'):
               help='Adjacency matrix transformation type')
 @click.option('--pooling', default='mean', type=click.Choice(['mean', 'max', 'attention']),
               help='Pooling method for graph-level readout')
+@click.option('--attention-type', default='simple',
+              type=click.Choice(['simple', 'temporal_mha', 'gru', 'set_transformer']),
+              help='Attention mechanism type (only used when --pooling=attention)')
 # Model hyperparameters
 @click.option('--nhid', default=32, type=int,
               help='Number of hidden units')
@@ -230,7 +233,7 @@ def evaluate(model, dataloader, criterion, device, task='regression'):
 @click.option('--seed', default=None, type=int,
               help='Random seed')
 def main(data, adjdata, num_nodes, seq_length, in_dim, task, num_classes,
-         gcn_bool, addaptadj, aptonly, randomadj, adjtype, pooling,
+         gcn_bool, addaptadj, aptonly, randomadj, adjtype, pooling, attention_type,
          nhid, dropout, blocks, layers, batch_size, learning_rate,
          weight_decay, epochs, clip, device, save, expid, seed):
     """Train Graph WaveNet for graph-level prediction"""
@@ -291,6 +294,7 @@ def main(data, adjdata, num_nodes, seq_length, in_dim, task, num_classes,
 
     # Initialize model
     click.echo("\nInitializing model...")
+    click.echo(f"Pooling: {pooling}" + (f" (attention type: {attention_type})" if pooling == 'attention' else ""))
     model = gwnet_graph_level(
         device=device_obj,
         num_nodes=num_nodes,
@@ -308,6 +312,7 @@ def main(data, adjdata, num_nodes, seq_length, in_dim, task, num_classes,
         blocks=blocks,
         layers=layers,
         pooling=pooling,
+        attention_type=attention_type,
         task=task
     ).to(device_obj)
 
@@ -390,6 +395,30 @@ def main(data, adjdata, num_nodes, seq_length, in_dim, task, num_classes,
     final_path = f"{save}_exp{expid}_best.pth"
     torch.save(model.state_dict(), final_path)
     click.echo(f"\nBest model saved to: {final_path}")
+
+    # Save model configuration
+    config_path = f"{save}_exp{expid}_config.json"
+    config = {
+        'num_nodes': num_nodes,
+        'seq_length': seq_length,
+        'in_dim': in_dim,
+        'task': task,
+        'num_classes': num_classes,
+        'pooling': pooling,
+        'attention_type': attention_type,
+        'nhid': nhid,
+        'dropout': dropout,
+        'blocks': blocks,
+        'layers': layers,
+        'gcn_bool': gcn_bool,
+        'addaptadj': addaptadj,
+        'aptonly': aptonly,
+        'adjtype': adjtype,
+        'out_dim': out_dim
+    }
+    with open(config_path, 'w') as f:
+        json.dump(config, f, indent=2)
+    click.echo(f"Model config saved to: {config_path}")
 
     # Save training history
     history_path = f"{save}_exp{expid}_history.json"

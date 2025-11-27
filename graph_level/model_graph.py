@@ -16,6 +16,7 @@ import torch.nn.functional as F
 import sys
 sys.path.append('..')
 from model import nconv, linear, gcn
+from attention_modules import create_attention_module
 
 
 class gwnet_graph_level(nn.Module):
@@ -40,6 +41,7 @@ class gwnet_graph_level(nn.Module):
         blocks=4,
         layers=2,
         pooling='mean',  # 'mean', 'max', 'attention'
+        attention_type='simple',  # 'simple', 'temporal_mha', 'gru', 'set_transformer' (only used when pooling='attention')
         task='regression',  # 'regression' or 'classification'
     ):
         super(gwnet_graph_level, self).__init__()
@@ -49,7 +51,10 @@ class gwnet_graph_level(nn.Module):
         self.gcn_bool = gcn_bool
         self.addaptadj = addaptadj
         self.pooling = pooling
+        self.attention_type = attention_type
         self.task = task
+        self.num_nodes = num_nodes
+        self.end_channels = end_channels
 
         self.filter_convs = nn.ModuleList()
         self.gate_convs = nn.ModuleList()
@@ -159,13 +164,22 @@ class gwnet_graph_level(nn.Module):
         self.receptive_field = receptive_field
 
         # Graph-level readout layers
+        self.attention_module = None
         if pooling == 'attention':
-            # Attention-based pooling
-            self.attention_weights = nn.Sequential(
-                nn.Conv2d(end_channels, end_channels // 4, kernel_size=(1, 1)),
-                nn.ReLU(),
-                nn.Conv2d(end_channels // 4, 1, kernel_size=(1, 1))
-            )
+            if attention_type == 'simple':
+                # Original simple attention-based pooling (backward compatibility)
+                self.attention_weights = nn.Sequential(
+                    nn.Conv2d(end_channels, end_channels // 4, kernel_size=(1, 1)),
+                    nn.ReLU(),
+                    nn.Conv2d(end_channels // 4, 1, kernel_size=(1, 1))
+                )
+            else:
+                # New attention mechanisms
+                self.attention_module = create_attention_module(
+                    attention_type=attention_type,
+                    in_channels=end_channels,
+                    num_nodes=num_nodes
+                )
 
         # Final prediction head
         self.fc = nn.Sequential(
@@ -245,11 +259,15 @@ class gwnet_graph_level(nn.Module):
             # Max pooling over nodes and time
             x = torch.amax(x, dim=[2, 3])  # (batch, end_channels)
         elif self.pooling == 'attention':
-            # Attention-weighted pooling
-            attention = self.attention_weights(x)  # (batch, 1, num_nodes, time)
-            attention = F.softmax(attention.view(attention.size(0), -1), dim=1)  # (batch, nodes*time)
-            attention = attention.view(x.size(0), 1, x.size(2), x.size(3))
-            x = torch.sum(x * attention, dim=[2, 3])  # (batch, end_channels)
+            if self.attention_type == 'simple':
+                # Original simple attention-weighted pooling
+                attention = self.attention_weights(x)  # (batch, 1, num_nodes, time)
+                attention = F.softmax(attention.view(attention.size(0), -1), dim=1)  # (batch, nodes*time)
+                attention = attention.view(x.size(0), 1, x.size(2), x.size(3))
+                x = torch.sum(x * attention, dim=[2, 3])  # (batch, end_channels)
+            else:
+                # New attention mechanisms
+                x, _ = self.attention_module(x)  # (batch, end_channels), attention_weights
         else:
             raise ValueError(f"Unknown pooling method: {self.pooling}")
 
