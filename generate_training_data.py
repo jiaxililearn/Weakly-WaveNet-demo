@@ -10,7 +10,7 @@ import pandas as pd
 
 
 def generate_graph_seq2seq_io_data(
-        df, x_offsets, y_offsets, add_time_in_day=True, add_day_in_week=False, scaler=None
+    df, x_offsets, y_offsets, add_time_in_day=True, add_day_in_week=False, scaler=None
 ):
     """
     Generate samples from
@@ -29,7 +29,9 @@ def generate_graph_seq2seq_io_data(
     data = np.expand_dims(df.values, axis=-1)
     feature_list = [data]
     if add_time_in_day:
-        time_ind = (df.index.values - df.index.values.astype("datetime64[D]")) / np.timedelta64(1, "D")
+        time_ind = (
+            df.index.values - df.index.values.astype("datetime64[D]")
+        ) / np.timedelta64(1, "D")
         time_in_day = np.tile(time_ind, [1, num_nodes, 1]).transpose((2, 1, 0))
         feature_list.append(time_in_day)
     if add_day_in_week:
@@ -74,8 +76,8 @@ def generate_train_val_test(args):
     num_val = num_samples - num_test - num_train
     x_train, y_train = x[:num_train], y[:num_train]
     x_val, y_val = (
-        x[num_train: num_train + num_val],
-        y[num_train: num_train + num_val],
+        x[num_train : num_train + num_val],
+        y[num_train : num_train + num_val],
     )
     x_test, y_test = x[-num_test:], y[-num_test:]
 
@@ -93,17 +95,47 @@ def generate_train_val_test(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--output_dir", type=str, default="data/METR-LA", help="Output directory.")
-    parser.add_argument("--traffic_df_filename", type=str, default="data/metr-la.h5", help="Raw traffic readings.",)
-    parser.add_argument("--seq_length_x", type=int, default=12, help="Sequence Length.",)
-    parser.add_argument("--seq_length_y", type=int, default=12, help="Sequence Length.",)
-    parser.add_argument("--y_start", type=int, default=1, help="Y pred start", )
-    parser.add_argument("--dow", action='store_true',)
+    parser.add_argument(
+        "--output_dir", type=str, default="data/METR-LA", help="Output directory."
+    )
+    parser.add_argument(
+        "--traffic_df_filename",
+        type=str,
+        default="data/metr-la.h5",
+        help="Raw traffic readings.",
+    )
+    parser.add_argument(
+        "--seq_length_x",
+        type=int,
+        default=12,
+        help="Sequence Length.",
+    )
+    parser.add_argument(
+        "--seq_length_y",
+        type=int,
+        default=12,
+        help="Sequence Length.",
+    )
+    parser.add_argument(
+        "--y_start",
+        type=int,
+        default=1,
+        help="Y pred start",
+    )
+    parser.add_argument(
+        "--dow",
+        action="store_true",
+    )
 
     args = parser.parse_args()
     if os.path.exists(args.output_dir):
-        reply = str(input(f'{args.output_dir} exists. Do you want to overwrite it? (y/n)')).lower().strip()
-        if reply[0] != 'y': exit
+        reply = (
+            str(input(f"{args.output_dir} exists. Do you want to overwrite it? (y/n)"))
+            .lower()
+            .strip()
+        )
+        if reply[0] != "y":
+            exit
     else:
         os.makedirs(args.output_dir)
     generate_train_val_test(args)
