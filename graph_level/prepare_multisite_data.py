@@ -1,152 +1,15 @@
 """
 Data preparation for multi-site scenario
 
-Scenario:
-- 200 sites (each site is an independent graph)
-- 2 sensors per site (nodes in each graph)
-- Multiple years of daily data
-- One label per site per year
-
-Example structure:
-    Site 0: sensor_0, sensor_1 → label for year 0, label for year 1, ...
-    Site 1: sensor_0, sensor_1 → label for year 0, label for year 1, ...
-    ...
+Supports loading from pandas pickle file with nested DataFrames.
+Each site contains time-series sensor data, used to predict site-level labels.
 """
 
 import numpy as np
 import pandas as pd
 import os
 import argparse
-
-
-def prepare_multisite_data_from_csv(sites_dir, labels_file, output_dir,
-                                     num_sites, num_sensors_per_site, seq_length):
-    """
-    Prepare data when each site has its own CSV file
-
-    Expected structure:
-        sites_dir/
-            site_0.csv  # Columns: date, sensor_0, sensor_1
-            site_1.csv
-            ...
-            site_199.csv
-
-        labels_file:  # CSV with columns: site_id, year, label
-            site_id,year,label
-            0,0,100.5
-            0,1,105.2
-            0,2,98.3
-            1,0,110.2
-            ...
-    """
-    print("Loading labels...")
-    labels_df = pd.read_csv(labels_file)
-
-    all_graphs_x = []
-    all_graphs_y = []
-
-    print(f"Processing {num_sites} sites...")
-
-    for site_id in range(num_sites):
-        # Load this site's sensor data
-        site_file = os.path.join(sites_dir, f'site_{site_id}.csv')
-
-        if not os.path.exists(site_file):
-            print(f"Warning: {site_file} not found, skipping")
-            continue
-
-        site_df = pd.read_csv(site_file, index_col='date', parse_dates=True)
-        site_data = site_df.values  # (days, num_sensors_per_site)
-
-        # Get labels for this site
-        site_labels = labels_df[labels_df['site_id'] == site_id].sort_values('year')['label'].values
-
-        # Split into yearly windows
-        num_years = len(site_data) // seq_length
-
-        if num_years != len(site_labels):
-            print(f"Warning: Site {site_id} has {num_years} years of data but {len(site_labels)} labels")
-            num_years = min(num_years, len(site_labels))
-
-        for year_id in range(num_years):
-            start_day = year_id * seq_length
-            end_day = start_day + seq_length
-
-            yearly_data = site_data[start_day:end_day, :]  # (365, 2)
-
-            # Add feature dimension and time feature
-            yearly_data_expanded = np.expand_dims(yearly_data, axis=-1)  # (365, 2, 1)
-
-            # Add time-of-day feature (simple day-of-year normalization)
-            time_feature = np.arange(seq_length) / seq_length  # (365,)
-            time_feature = np.tile(time_feature[:, np.newaxis, np.newaxis],
-                                   (1, num_sensors_per_site, 1))  # (365, 2, 1)
-
-            yearly_data_with_time = np.concatenate([yearly_data_expanded, time_feature],
-                                                   axis=-1)  # (365, 2, 2)
-
-            all_graphs_x.append(yearly_data_with_time)
-            all_graphs_y.append(site_labels[year_id])
-
-        if (site_id + 1) % 50 == 0:
-            print(f"  Processed {site_id + 1}/{num_sites} sites...")
-
-    all_graphs_x = np.array(all_graphs_x, dtype=np.float32)
-    all_graphs_y = np.array(all_graphs_y, dtype=np.float32)
-
-    print(f"\nTotal graphs created: {len(all_graphs_x)}")
-    print(f"Graph shape: {all_graphs_x.shape}")  # (num_graphs, 365, 2, 2)
-    print(f"Labels shape: {all_graphs_y.shape}")  # (num_graphs,)
-
-    return all_graphs_x, all_graphs_y
-
-
-def prepare_multisite_data_from_array(sensor_data, labels, num_sites,
-                                       num_sensors_per_site, seq_length):
-    """
-    Prepare data when you have arrays
-
-    Args:
-        sensor_data: (num_sites, total_days, num_sensors_per_site)
-        labels: (num_sites, num_years)
-    """
-    print(f"Processing array data: {sensor_data.shape}")
-
-    all_graphs_x = []
-    all_graphs_y = []
-
-    num_years = sensor_data.shape[1] // seq_length
-
-    for site_id in range(num_sites):
-        site_data = sensor_data[site_id]  # (total_days, num_sensors_per_site)
-        site_labels = labels[site_id]  # (num_years,)
-
-        for year_id in range(num_years):
-            start_day = year_id * seq_length
-            end_day = start_day + seq_length
-
-            yearly_data = site_data[start_day:end_day, :]  # (365, 2)
-
-            # Add features
-            yearly_data_expanded = np.expand_dims(yearly_data, axis=-1)  # (365, 2, 1)
-
-            time_feature = np.arange(seq_length) / seq_length
-            time_feature = np.tile(time_feature[:, np.newaxis, np.newaxis],
-                                   (1, num_sensors_per_site, 1))
-
-            yearly_data_with_time = np.concatenate([yearly_data_expanded, time_feature],
-                                                   axis=-1)  # (365, 2, 2)
-
-            all_graphs_x.append(yearly_data_with_time)
-            all_graphs_y.append(site_labels[year_id])
-
-    all_graphs_x = np.array(all_graphs_x, dtype=np.float32)
-    all_graphs_y = np.array(all_graphs_y, dtype=np.float32)
-
-    print(f"Total graphs created: {len(all_graphs_x)}")
-    print(f"Graph shape: {all_graphs_x.shape}")
-
-    return all_graphs_x, all_graphs_y
+from tqdm import tqdm
 
 
 def split_and_save(x, y, output_dir, train_ratio=0.7, val_ratio=0.1):
@@ -194,6 +57,133 @@ def split_and_save(x, y, output_dir, train_ratio=0.7, val_ratio=0.1):
         json.dump(metadata, f, indent=2)
 
 
+def prepare_multisite_data_from_pickle(pickle_file, data_cols, label_col,
+                                        seq_length=365):
+    """
+    Prepare data from pandas pickle file
+
+    Args:
+        pickle_file: Path to pandas pickle file
+        data_cols: List of column names from site_data dataframe to use as sensor features
+                   e.g., ['temperature', 'missing']
+        label_col: Column name for label (e.g., 'bleached_flag')
+        seq_length: Number of days per year (default 365, handles leap years by truncation)
+
+    Expected schema:
+        Main pickle DataFrame columns: site, date_start, date_end, site_data, [label_col]
+        site_data (nested DataFrame) columns: time, [data_cols...], site
+
+    Returns:
+        x: (num_graphs, seq_length, num_sensors, num_features)
+           where num_features = len(data_cols) + 1 (data + time-of-year)
+        y: (num_graphs,)
+    """
+    print(f"Loading pickle file: {pickle_file}")
+    df = pd.read_pickle(pickle_file)
+
+    print(f"Loaded {len(df)} site records")
+    print(f"Using data columns: {data_cols}")
+    print(f"Using label column: {label_col}")
+
+    all_graphs_x = []
+    all_graphs_y = []
+
+    num_sensors = len(data_cols)
+
+    for idx, row in tqdm(df.iterrows(), total=len(df), desc="Processing sites"):
+        site_id = row['site']
+        site_data_df = row['site_data']
+        label = row[label_col]
+
+        # Get total days available
+        total_days = len(site_data_df)
+
+        if total_days < seq_length:
+            tqdm.write(f"Warning: Site {site_id} has only {total_days} days, skipping")
+            continue
+
+        # Extract sensor data columns (first seq_length days only)
+        sensor_data = site_data_df[data_cols].iloc[:seq_length].values  # (seq_length, num_sensors)
+
+        # Add feature dimension
+        sensor_data_expanded = np.expand_dims(sensor_data, axis=-1)  # (365, num_sensors, 1)
+
+        # Add time-of-year feature
+        time_feature = np.arange(seq_length) / seq_length  # (365,)
+        time_feature = np.tile(time_feature[:, np.newaxis, np.newaxis],
+                               (1, num_sensors, 1))  # (365, num_sensors, 1)
+
+        data_with_time = np.concatenate([sensor_data_expanded, time_feature],
+                                       axis=-1)  # (365, num_sensors, 2)
+
+        all_graphs_x.append(data_with_time)
+        all_graphs_y.append(label)
+
+    all_graphs_x = np.array(all_graphs_x, dtype=np.float32)
+    all_graphs_y = np.array(all_graphs_y, dtype=np.float32)
+
+    print(f"\nTotal graphs created: {len(all_graphs_x)}")
+    print(f"Graph shape: {all_graphs_x.shape}")  # (num_graphs, 365, num_sensors, 2)
+    print(f"Labels shape: {all_graphs_y.shape}")  # (num_graphs,)
+
+    return all_graphs_x, all_graphs_y
+
+
+def prepare_multisite_data_from_array(sensor_data, labels, num_sites,
+                                       num_sensors_per_site, seq_length):
+    """
+    Prepare data from arrays (used by synthetic data generator)
+
+    Args:
+        sensor_data: (num_sites, total_days, num_sensors_per_site)
+        labels: (num_sites, num_years)
+        num_sites: Number of sites
+        num_sensors_per_site: Number of sensors per site
+        seq_length: Days per year
+
+    Returns:
+        x: (num_graphs, seq_length, num_sensors, 2)
+        y: (num_graphs,)
+    """
+    print(f"Processing array data: {sensor_data.shape}")
+
+    all_graphs_x = []
+    all_graphs_y = []
+
+    num_years = sensor_data.shape[1] // seq_length
+
+    for site_id in tqdm(range(num_sites), desc="Processing synthetic sites"):
+        site_data = sensor_data[site_id]  # (total_days, num_sensors_per_site)
+        site_labels = labels[site_id]  # (num_years,)
+
+        for year_id in range(num_years):
+            start_day = year_id * seq_length
+            end_day = start_day + seq_length
+
+            yearly_data = site_data[start_day:end_day, :]  # (365, num_sensors)
+
+            # Add features
+            yearly_data_expanded = np.expand_dims(yearly_data, axis=-1)  # (365, num_sensors, 1)
+
+            time_feature = np.arange(seq_length) / seq_length
+            time_feature = np.tile(time_feature[:, np.newaxis, np.newaxis],
+                                   (1, num_sensors_per_site, 1))
+
+            yearly_data_with_time = np.concatenate([yearly_data_expanded, time_feature],
+                                                   axis=-1)  # (365, num_sensors, 2)
+
+            all_graphs_x.append(yearly_data_with_time)
+            all_graphs_y.append(site_labels[year_id])
+
+    all_graphs_x = np.array(all_graphs_x, dtype=np.float32)
+    all_graphs_y = np.array(all_graphs_y, dtype=np.float32)
+
+    print(f"Total graphs created: {len(all_graphs_x)}")
+    print(f"Graph shape: {all_graphs_x.shape}")
+
+    return all_graphs_x, all_graphs_y
+
+
 def generate_synthetic_multisite_data(num_sites, num_sensors_per_site,
                                       num_years, seq_length, task='regression',
                                       num_classes=None):
@@ -229,17 +219,20 @@ def generate_synthetic_multisite_data(num_sites, num_sensors_per_site,
 def main():
     parser = argparse.ArgumentParser(description='Prepare multi-site data')
 
-    parser.add_argument('--sites_dir', type=str, default=None,
-                        help='Directory containing site CSV files')
-    parser.add_argument('--labels_file', type=str, default=None,
-                        help='CSV file with labels')
+    parser.add_argument('--pickle_file', type=str, default=None,
+                        help='Path to pandas pickle file')
+    parser.add_argument('--data_cols', type=str, nargs='+', default=None,
+                        help='Column names from site_data to use as features (e.g., temperature missing)')
+    parser.add_argument('--label_col', type=str, default=None,
+                        help='Column name for label (e.g., bleached_flag)')
+
     parser.add_argument('--output_dir', type=str, required=True,
                         help='Output directory')
 
     parser.add_argument('--num_sites', type=int, default=200,
-                        help='Number of sites')
+                        help='Number of sites (for synthetic data)')
     parser.add_argument('--num_sensors_per_site', type=int, default=2,
-                        help='Number of sensors per site')
+                        help='Number of sensors per site (for synthetic data)')
     parser.add_argument('--num_years', type=int, default=3,
                         help='Number of years (for synthetic data)')
     parser.add_argument('--seq_length', type=int, default=365,
@@ -250,7 +243,7 @@ def main():
 
     parser.add_argument('--task', type=str, default='regression',
                         choices=['regression', 'classification'],
-                        help='Task type')
+                        help='Task type (for synthetic data)')
     parser.add_argument('--num_classes', type=int, default=None,
                         help='Number of classes (for classification)')
 
@@ -260,10 +253,17 @@ def main():
     args = parser.parse_args()
 
     # Validation
-    if args.task == 'classification' and args.num_classes is None:
+    if args.synthetic and args.task == 'classification' and args.num_classes is None:
         parser.error("--num_classes is required for classification task")
 
-    if args.synthetic:
+    if args.pickle_file:
+        if not args.data_cols or not args.label_col:
+            parser.error("--data_cols and --label_col are required when using --pickle_file")
+        print("Loading from pandas pickle file...")
+        x, y = prepare_multisite_data_from_pickle(
+            args.pickle_file, args.data_cols, args.label_col, args.seq_length
+        )
+    elif args.synthetic:
         print("Generating synthetic multi-site data...")
         sensor_data, labels = generate_synthetic_multisite_data(
             args.num_sites, args.num_sensors_per_site,
@@ -274,21 +274,15 @@ def main():
             sensor_data, labels, args.num_sites,
             args.num_sensors_per_site, args.seq_length
         )
-    elif args.sites_dir and args.labels_file:
-        print("Loading from CSV files...")
-        x, y = prepare_multisite_data_from_csv(
-            args.sites_dir, args.labels_file, args.output_dir,
-            args.num_sites, args.num_sensors_per_site, args.seq_length
-        )
     else:
-        raise ValueError("Either use --synthetic or provide --sites_dir and --labels_file")
+        raise ValueError("Either use --pickle_file or --synthetic")
 
     # Split and save
     split_and_save(x, y, args.output_dir, args.train_ratio, args.val_ratio)
 
     print("\nData preparation complete!")
-    print(f"Each graph has {args.num_sensors_per_site} nodes (sensors)")
-    print(f"Total graphs: {len(x)} ({args.num_sites} sites × {args.num_years} years)")
+    print(f"Each graph has {x.shape[2]} nodes (sensors)")
+    print(f"Total graphs: {len(x)}")
 
 
 if __name__ == "__main__":
