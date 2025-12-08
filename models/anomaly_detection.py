@@ -8,6 +8,12 @@ GWNet feature extraction with graph aggregation mechanisms.
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import sys
+import os
+
+sys.path.insert(0, os.path.dirname(__file__))
+
+from model import gwnet
 from graph_aggregation import (
     SimpleGraphAggregation,
     SpatialTemporalAttention,
@@ -48,9 +54,6 @@ class AnomalyDetectionModel(nn.Module):
             num_classes: Number of classes (2 for binary anomaly detection)
         """
         super(AnomalyDetectionModel, self).__init__()
-
-        # Import gwnet here to avoid circular dependency
-        from model import gwnet
 
         # Feature extraction: GWNet
         self.gwnet = gwnet(**gwnet_params)

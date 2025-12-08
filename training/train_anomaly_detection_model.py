@@ -14,8 +14,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 from sklearn.metrics import roc_auc_score, average_precision_score
 
-from anomaly_detection import AnomalyDetectionModel
-import util
+import sys
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+
+from models.anomaly_detection import AnomalyDetectionModel
+from utils import util
 
 
 # ============================================================
@@ -225,6 +229,7 @@ def load_checkpoint(checkpoint_path, model, optimizer=None):
     metrics = checkpoint.get("metrics", {})
 
     print(f"Loaded checkpoint from epoch {epoch}")
+    # print(f"  Loaded TEST metrics: {metrics}")
     return epoch, metrics
 
 
@@ -495,6 +500,19 @@ def main(
         aggregation_params=aggregation_params,
         num_classes=num_classes,
     ).to(dev)
+
+    # Reinitialize classifier with stronger initialization
+    # This helps prevent constant outputs
+    for name, module in model.named_modules():
+        if "classifier" in name and isinstance(module, nn.Linear):
+            nn.init.xavier_normal_(module.weight, gain=1.0)
+            if module.bias is not None:
+                # Initialize bias to favor normal class slightly
+                # This prevents saturating at 0.5
+                nn.init.constant_(module.bias, 0)
+                if module.out_features == 2:  # Final layer
+                    module.bias.data[0] = 0.5  # Normal class
+                    module.bias.data[1] = -0.5  # Anomaly class
 
     # Count parameters
     total_params = sum(p.numel() for p in model.parameters())

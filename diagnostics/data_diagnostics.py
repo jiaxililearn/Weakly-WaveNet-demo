@@ -173,15 +173,27 @@ def analyze_model_predictions(model, test_loader, device, save_dir="./diagnostic
     all_preds = []
 
     with torch.no_grad():
-        for batch_idx, (data, target) in enumerate(test_loader):
-            data, target = data.to(device), target.to(device)
-            output = model(data)
-            probs = torch.softmax(output, dim=1)[:, 1]
-            preds = (probs > 0.5).long()
+        for iter, (x, y) in enumerate(test_loader.get_iterator()):
+            # Convert to tensors and move to device
+            testx = torch.Tensor(x).to(device)
+            testx = testx.transpose(
+                1, 3
+            )  # (batch, seq_length, num_nodes, in_dim) -> (batch, in_dim, num_nodes, seq_length)
+            testy = torch.LongTensor(y).to(device)  # (batch,)
 
-            all_labels.extend(target.cpu().numpy())
-            all_probs.extend(probs.cpu().numpy())
-            all_preds.extend(preds.cpu().numpy())
+            # Forward pass
+            output = model(testx, return_attention_weights=False)
+            logits = output["logits"]
+
+            # Get predictions
+            probs = torch.nn.functional.softmax(logits, dim=1)
+            preds_probs = probs[:, 1].cpu().numpy()
+            preds_hard = (preds_probs > 0.5).astype(int)
+            labels = testy.cpu().numpy()
+
+            all_labels.extend(labels)
+            all_probs.extend(preds_probs)
+            all_preds.extend(preds_hard)
 
     all_labels = np.array(all_labels)
     all_probs = np.array(all_probs)
@@ -282,3 +294,81 @@ model.load_state_dict(torch.load('checkpoints/anomaly_detection/best_model.pt'))
 analyze_model_predictions(model, test_loader, device='cuda')
     """
     )
+    import sys
+    import os
+
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+    from models.anomaly_detection import AnomalyDetectionModel
+    from training.train_anomaly_detection_model import load_data, load_checkpoint
+
+    # Setup device
+    dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {dev}")
+
+    num_nodes = 3
+    dropout = 0.3
+    in_dim = 2
+    seq_length = 128
+    num_classes = 2
+    gwnet_blocks = 5  # User-configurable
+    gwnet_layers = 6  # User-configurable
+    feature_dim = 16  # Reduced feature dimension for attention to prevent memory issues
+    temporal_length = 51
+    num_heads = 4
+    batch_size = 32
+    aggregation_type = "spatial_temporal_attention"
+
+    data = "data/temp_dhw/"
+
+    gwnet_params = {
+        "device": dev,
+        "num_nodes": num_nodes,
+        "dropout": dropout,
+        "supports": None,
+        "gcn_bool": True,
+        "addaptadj": True,
+        "aptinit": None,
+        "in_dim": in_dim,
+        "out_dim": seq_length,  # GWNet out_dim (usually set to seq_length in original code)
+        "residual_channels": 32,
+        "dilation_channels": 32,
+        "skip_channels": 256,
+        "end_channels": 512,
+        "kernel_size": 2,
+        "blocks": gwnet_blocks,  # User-configurable to control temporal compression
+        "layers": gwnet_layers,  # User-configurable to control temporal compression
+    }
+
+    # Calculate actual temporal length after GWNet processing
+    # GWNet uses dilated convolutions that reduce temporal dimension
+    # Rough estimate: temporal_length ≈ seq_length / (2^(blocks * layers - 1))
+
+    print(f"  (Input: {seq_length}, Blocks: {gwnet_blocks}, Layers: {gwnet_layers})")
+    print(f"  Using feature_dim={feature_dim} for attention to prevent memory issues")
+
+    aggregation_params = {
+        "temporal_length": temporal_length,
+        "num_nodes": num_nodes,
+        "out_dim": seq_length,
+        "num_heads": num_heads,
+        "dropout": dropout,
+        "feature_dim": feature_dim,  # Reduced feature dimension for attention
+    }
+
+    model = AnomalyDetectionModel(
+        gwnet_params=gwnet_params,
+        aggregation_type=aggregation_type,
+        aggregation_params=aggregation_params,
+        num_classes=num_classes,
+    ).to(dev)
+
+    # model.load_state_dict(torch.load("checkpoints/anomaly_detection/best_model.pt"))
+    best_model_path = "checkpoints/anomaly_detection/best_model.pt"
+    load_checkpoint(best_model_path, model)
+
+    train_loader, val_loader, test_loader, scaler, class_weights = load_data(
+        data, batch_size
+    )
+    # Analyze predictions
+    analyze_model_predictions(model, test_loader, device="cuda")
